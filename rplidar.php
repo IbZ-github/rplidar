@@ -2,7 +2,6 @@
 
 include 'PhpSerial.php';
 
-
 define("SYNC_S_BYTE", "\xA5");
 define("SYNC_R_BYTE", "\x5A");
 
