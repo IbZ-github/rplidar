@@ -19,4 +19,6 @@ $s = unpack("H*",$read);
 var_dump($read);
 var_dump($s);
 
+
+
 ?>
