@@ -340,7 +340,6 @@ class PhpSerial
         if ($this->_dState !== SERIAL_DEVICE_SET) {
             trigger_error("Unable to set length of a character : the device " .
                           "is either not set or opened", E_USER_WARNING);
-
             return false;
         }
 
@@ -455,7 +454,6 @@ class PhpSerial
         if ($this->_dState !== SERIAL_DEVICE_SET) {
             trigger_error("Unable to set flow control mode : the device is " .
                           "either not set or opened", E_USER_WARNING);
-
             return false;
         }
 
