@@ -84,11 +84,11 @@ CONF_SCAN_MODE_TYPICAL       = b'\x7C\x00\x00\x00'
 CONF_SCAN_MODE_NAME          = b'\x7F\x00\x00\x00'
 
 _SCAN_TYPE = {
-    'normal':   {'byte': CMD_SCAN,         'response': ANS_TYPE_MEASUREMENT,                'size': MEASUREMENT_LEN},
-    'force':    {'byte': CMD_FORCE_SCAN,   'response': ANS_TYPE_MEASUREMENT,                'size': MEASUREMENT_LEN},
-    'express':  {'byte': CMD_EXPRESS_SCAN, 'response': ANS_TYPE_MEASUREMENT_CAPSULED,       'size': MEASUREMENT_EXPRESS_LEN},
-    'extended': {'byte': CMD_EXPRESS_SCAN, 'response': ANS_TYPE_MEASUREMENT_CAPSULED_ULTRA, 'size': MEASUREMENT_CAPSULED_ULTRA_LEN},
-    'dense':    {'byte': CMD_EXPRESS_SCAN, 'response': ANS_TYPE_MEASUREMENT_DENSE_CAPSULED, 'size': MEASUREMENT_EXPRESS_LEN},
+    'normal':    {'byte': CMD_SCAN,         'response': ANS_TYPE_MEASUREMENT,                'size': MEASUREMENT_LEN},
+    'force':     {'byte': CMD_FORCE_SCAN,   'response': ANS_TYPE_MEASUREMENT,                'size': MEASUREMENT_LEN},
+    'express':   {'byte': CMD_EXPRESS_SCAN, 'response': ANS_TYPE_MEASUREMENT_CAPSULED,       'size': MEASUREMENT_EXPRESS_LEN},
+    'extended':  {'byte': CMD_EXPRESS_SCAN, 'response': ANS_TYPE_MEASUREMENT_CAPSULED_ULTRA, 'size': MEASUREMENT_CAPSULED_ULTRA_LEN},
+    'dense':     {'byte': CMD_EXPRESS_SCAN, 'response': ANS_TYPE_MEASUREMENT_DENSE_CAPSULED, 'size': MEASUREMENT_EXPRESS_LEN},
 }
 
 
@@ -117,6 +117,12 @@ def _showhex(signal):
     '''Converts string bytes to hex representation (useful for debugging)'''
     return [format(_b2i(b), '#02x') for b in signal]
 
+def _anglediff(currAngle, prevAngle):
+    diffAngle = currAngle - prevAngle
+    if prevAngle > currAngle:
+        diffAngle += 360
+    return diffAngle
+
 
 def _process_scan(raw):
     '''Processes input raw data and returns measurement data'''
@@ -135,11 +141,16 @@ def _process_scan(raw):
 
 def _process_express_scan(data, new_angle, trame):
     new_scan = (new_angle < data.start_angle) & (trame == 1)
-    angle = (data.start_angle + (
-            (new_angle - data.start_angle) % 360
-            )/32*trame - data.angle[trame-1]) % 360
+    angle = (data.start_angle + ( (new_angle - data.start_angle) % 360 )/32*trame - data.angle[trame-1]) % 360
     distance = data.distance[trame-1]
     return new_scan, None, angle, distance
+
+def _process_dense_scan(data, new_angle, cabin):
+    new_scan = (new_angle < data.start_angle) & (cabin == 1)
+    angle = data.start_angle + _anglediff(new_angle, data.start_angle)/40*cabin
+    distance = data.distance[cabin-1]
+    return new_scan, None, angle, distance
+
 
 
 class RPLidar(object):
@@ -167,6 +178,8 @@ class RPLidar(object):
         self.scanning = [False, 0, 'normal']
         self.express_trame = 32
         self.express_data = False
+        self.dense_cabin = 40
+        self.dense_data = False
         self.motor_running = None
         if logger is None:
             logger = logging.getLogger('rplidar')
@@ -210,7 +223,6 @@ class RPLidar(object):
 
     def start_motor(self):
         '''Starts sensor motor'''
-        # print('Starting motor')
         self.logger.info('Starting motor')
         # For A1
         self._serial.setDTR(False)
@@ -242,20 +254,17 @@ class RPLidar(object):
         req += struct.pack('B', checksum)
         self._serial.write(req)
         self.logger.debug('Command sent: %s' % _showhex(req))
-        # print('Command sent with payload: %s' % _showhex(req))
 
     def _send_cmd(self, cmd):
         '''Sends `cmd` command to the sensor'''
         req = SYNC_S_BYTE + cmd
         self._serial.write(req)
         self.logger.debug('Command sent: %s' % _showhex(req))
-        # print('Command sent: %s' % _showhex(req))
 
     def _read_descriptor(self):
         '''Reads descriptor packet'''
         descriptor = self._serial.read(DESCRIPTOR_LEN)
         self.logger.debug('Received descriptor: %s', _showhex(descriptor))
-        # print('Received descriptor: %s' % _showhex(descriptor))
         if len(descriptor) != DESCRIPTOR_LEN:
             raise RPLidarException('Descriptor length mismatch')
         elif not descriptor.startswith(SYNC_S_BYTE + SYNC_R_BYTE):
@@ -270,7 +279,6 @@ class RPLidar(object):
             time.sleep(0.001)
         data = self._serial.read(dsize)
         self.logger.debug('Received data: %s', _showhex(data))
-        # print('Received data: %s' % _showhex(data))
         return data
 
     def get_info(self):
@@ -302,7 +310,7 @@ class RPLidar(object):
             'serialnumber': serialnumber,
         }
         return data
-        
+
 
     def get_health(self):
         '''Get device health state. When the core system detects some
@@ -424,14 +432,14 @@ class RPLidar(object):
 
     def get_ScanModeCount(self):
         ''' Get the amount of scan modes supported by LIDAR
-      
+
         RPLIDAR returns the amount of scan modes supported when receives this command.
-         
-        RPLIDAR supports scan mode ids from 0 to (scan_mode_count – 1). 
-        For instance, device returning 2 according to this query means that the device 
-        support 2 work modes, whose ids are 0, 1. The host system may use the work mode 
-        id and other configuration type to get specific characters of the work mode. 
-     
+
+        RPLIDAR supports scan mode ids from 0 to (scan_mode_count – 1).
+        For instance, device returning 2 according to this query means that the device
+        support 2 work modes, whose ids are 0, 1. The host system may use the work mode
+        id and other configuration type to get specific characters of the work mode.
+
         Returns
         -------
         count : int
@@ -456,8 +464,8 @@ class RPLidar(object):
         return id
 
     def get_ScanModeName(self, mode):
-        ''' Get the name of scan mode, whose id is specified by the payload of request. 
-        The return value is a string of a user-friendly name for this scan mode.  
+        ''' Get the name of scan mode, whose id is specified by the payload of request.
+        The return value is a string of a user-friendly name for this scan mode.
 
         Parameters
         ----------
@@ -467,7 +475,7 @@ class RPLidar(object):
         Returns
         -------
         name : str
-            user-friendly name for this scan mode.  
+            user-friendly name for this scan mode.
         '''
         pl = struct.pack("<H", mode)
         raw = self.get_LidarConf(CONF_SCAN_MODE_NAME, pl);
@@ -475,13 +483,13 @@ class RPLidar(object):
         return str(raw[4:], "ascii")
 
     def get_ScanModeAnsType(self, mode):
-        ''' Get the answer command type of the scan mode, whose id is specified by the payload of request. 
-        The return value is 8bit unsigned int, denotes the answer command type.  
-        Typical return answer types: 
-        0x81 – For standard mode, returns data in rplidar_resp_measurement_node_t 
-        0x82 – For express mode, returns data in capsuled format 
-        0x83 – For boost, stability and sensitivity mode, returns data in ultra capsuled format 
-        
+        ''' Get the answer command type of the scan mode, whose id is specified by the payload of request.
+        The return value is 8bit unsigned int, denotes the answer command type.
+        Typical return answer types:
+        0x81 – For standard mode, returns data in rplidar_resp_measurement_node_t
+        0x82 – For express mode, returns data in capsuled format
+        0x83 – For boost, stability and sensitivity mode, returns data in ultra capsuled format
+
         Parameters
         ----------
         mode : int
@@ -496,7 +504,7 @@ class RPLidar(object):
         return _b2i(raw[4])
 
     def get_MaxDistance(self, mode):
-        ''' Get max measurement distance of the scan mode, whose id is specified by the payload of request. 
+        ''' Get max measurement distance of the scan mode, whose id is specified by the payload of request.
 
         Parameters
         ----------
@@ -516,8 +524,8 @@ class RPLidar(object):
         return distance[0]/256.0
 
     def get_LidarSampleDuration(self, mode):
-        '''Get sample duration of the scan mode, whose id is specified by the payload of request. 
-    
+        '''Get sample duration of the scan mode, whose id is specified by the payload of request.
+
         Parameters
         ----------
         mode : int
@@ -534,8 +542,8 @@ class RPLidar(object):
         # return duration
         duration = struct.unpack('I', raw[4:])
         return duration[0]/256.0
-    
-   
+
+
 
     def clean_input(self):
         '''Clean input buffer by reading all available data'''
@@ -554,12 +562,13 @@ class RPLidar(object):
         self.scanning[0] = False
         self.clean_input()
 
-    def start(self, scan_type='normal'):
+    def start(self, scan_type='normal', express_mode=0):
         '''Start the scanning process
 
         Parameters
         ----------
-        scan : normal, force or express.
+        scan : normal, force, express, extended or dense.
+        express_mode : id of express scan mode, 0 for legacy express scan mode
         '''
         if self.scanning[0]:
             return 'Scanning already running !'
@@ -582,7 +591,7 @@ class RPLidar(object):
         cmd = _SCAN_TYPE[scan_type]['byte']
         self.logger.info('starting scan process in %s mode' % scan_type)
 
-        if scan_type == 'express':
+        if (scan_type != 'standard') or (scan_type != 'force'):
             self._send_payload_cmd(cmd, b'\x00\x00\x00\x00\x00')
         else:
             self._send_cmd(cmd)
@@ -595,6 +604,8 @@ class RPLidar(object):
         if dtype != _SCAN_TYPE[scan_type]['response']:
             raise RPLidarException('Wrong response data type, get %d expected %d', dtype, _SCAN_TYPE[scan_type]['response'])
         self.scanning = [True, dsize, scan_type]
+
+
 
     def reset(self):
         '''Resets sensor core, reverting it to a similar state as it has
@@ -669,6 +680,22 @@ class RPLidar(object):
                 yield _process_express_scan(self.express_old_data,
                                             self.express_data.start_angle,
                                             self.express_trame)
+            if self.scanning[2] == 'dense':
+                if self.dense_cabin == 40:
+                    self.dense_cabin = 0
+                    if not self.dense_data:
+                        self.logger.debug('reading first time bytes')
+                        self.dense_data = DensePacket.from_string(self._read_response(dsize))
+
+                    self.dense_old_data = self.dense_data
+                    self.logger.debug('set dense old_data with start_angle %f', self.dense_old_data.start_angle)
+                    self.dense_data = DensePacket.from_string(self._read_response(dsize))
+                    self.logger.debug('set dense new_data with start_angle %f', self.dense_data.start_angle)
+
+                self.dense_cabin += 1
+                self.logger.debug('process scan of frame %d with angle : %f and angle new : %f', self.dense_cabin, self.dense_old_data.start_angle, self.dense_data.start_angle)
+                yield _process_dense_scan(self.dense_old_data, self.dense_data.start_angle, self.dense_cabin)
+
 
     def iter_scans(self, scan_type='normal', max_buf_meas=3000, min_len=5):
         '''Iterate over scans. Note that consumer must be fast enough,
@@ -735,3 +762,32 @@ class ExpressPacket(namedtuple('express_packet',
                 (packet[i+6] & 0b00000001) << 4))/8*cls.sign[(
                     packet[i+6] & 0b00000010) >> 1],)
         return cls(d, a, new_scan, start_angle)
+
+
+class DensePacket(namedtuple('dense_packet',
+                               'distance new_scan start_angle')):
+    sync1 = 0xa
+    sync2 = 0x5
+    sign = {0: 1, 1: -1}
+
+    @classmethod
+    def from_string(cls, data):
+        packet = bytearray(data)
+
+        if (packet[0] >> 4) != cls.sync1 or (packet[1] >> 4) != cls.sync2:
+            raise ValueError('try to parse corrupted data ({})'.format(packet))
+
+        checksum = 0
+        for b in packet[2:]:
+            checksum ^= b
+        if checksum != (packet[0] & 0b00001111) + ((
+                        packet[1] & 0b00001111) << 4):
+            raise ValueError('Invalid checksum ({})'.format(packet))
+
+        new_scan = packet[3] >> 7
+        start_angle = (packet[2] + ((packet[3] & 0b01111111) << 8)) / 64
+
+        d = ()
+        for i in range(0,80,2):
+            d += (packet[i+4] + (packet[i+5]<<8),)
+        return cls(d, new_scan, start_angle)
