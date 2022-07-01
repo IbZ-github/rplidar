@@ -1,7 +1,9 @@
 # rplidar
 
 library for working Slamtec RPLIDAR
+
 php version - limited functionality
+
 python version - extended by new method
 
 tested with A1 and S1
